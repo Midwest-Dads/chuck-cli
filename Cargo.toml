@@ -1,6 +1,6 @@
 [package]
 name = "chuck"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2021"
 description = "Interactive commit selection for upstream contributions"
 authors = ["Your Name <your.email@example.com>"]
@@ -8,7 +8,6 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
-git2 = "0.18"
 crossterm = "0.27"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }

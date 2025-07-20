@@ -3,13 +3,14 @@ use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
-use git2::{Oid, Repository};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::process::Command;
 
 #[derive(Parser)]
@@ -77,21 +78,49 @@ impl CommitSelector {
     }
 
     fn display(&self) {
-        // Clear screen
-        print!("\x1B[2J\x1B[1;1H");
+        // Clear screen and move cursor to top-left
+        print!("\x1B[2J\x1B[H");
+        io::stdout().flush().unwrap();
 
-        println!("🧔 Chuck: Sorting commits like a pro\n");
-        println!("Found {} commits since you forked:\n", self.commits.len());
+        let (terminal_width, _) = size().unwrap_or((80, 24));
+        let width = terminal_width as usize;
 
+        // Header
+        println!("🧔 Chuck: Sorting commits like a pro");
+        println!();
+        println!("Found {} commits since template:", self.commits.len());
+        println!();
+
+        // Display commits with proper wrapping
         for (i, commit) in self.commits.iter().enumerate() {
             let cursor = if i == self.current_index { ">" } else { " " };
             let checkbox = if commit.selected { "[✓]" } else { "[ ]" };
-            let dad_comment = get_dad_comment(&commit.message, commit.selected);
 
-            println!(
-                "  {} {} {} - {}",
-                cursor, checkbox, commit.short_hash, commit.message
-            );
+            // Main commit line with proper wrapping
+            let prefix = format!("{} {} {} - ", cursor, checkbox, commit.short_hash);
+            let available_width = width.saturating_sub(prefix.len());
+
+            if commit.message.len() <= available_width {
+                println!("{}{}", prefix, commit.message);
+            } else {
+                // Wrap the commit message
+                println!("{}{}", prefix, &commit.message[..available_width]);
+                let remaining = &commit.message[available_width..];
+                let indent = " ".repeat(prefix.len());
+
+                for chunk in remaining
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(width.saturating_sub(indent.len()))
+                {
+                    let chunk_str: String = chunk.iter().collect();
+                    if !chunk_str.trim().is_empty() {
+                        println!("{}{}", indent, chunk_str);
+                    }
+                }
+            }
+
+            // Files line with wrapping
             if !commit.files.is_empty() {
                 let file_list = if commit.files.len() <= 3 {
                     commit.files.join(", ")
@@ -102,12 +131,58 @@ impl CommitSelector {
                         commit.files.len() - 2
                     )
                 };
-                println!("      Files: {}", file_list);
+
+                let files_prefix = "    Files: ";
+                let available_width = width.saturating_sub(files_prefix.len());
+
+                if file_list.len() <= available_width {
+                    println!("{}{}", files_prefix, file_list);
+                } else {
+                    println!("{}{}", files_prefix, &file_list[..available_width]);
+                    let remaining = &file_list[available_width..];
+                    let indent = " ".repeat(files_prefix.len());
+
+                    for chunk in remaining
+                        .chars()
+                        .collect::<Vec<_>>()
+                        .chunks(width.saturating_sub(indent.len()))
+                    {
+                        let chunk_str: String = chunk.iter().collect();
+                        if !chunk_str.trim().is_empty() {
+                            println!("{}{}", indent, chunk_str);
+                        }
+                    }
+                }
             }
-            println!("      {}", dad_comment);
-            println!();
+
+            // Dad comment with wrapping
+            let dad_comment = get_dad_comment(&commit.message, commit.selected);
+            let comment_prefix = "    ";
+            let available_width = width.saturating_sub(comment_prefix.len());
+
+            if dad_comment.len() <= available_width {
+                println!("{}{}", comment_prefix, dad_comment);
+            } else {
+                println!("{}{}", comment_prefix, &dad_comment[..available_width]);
+                let remaining = &dad_comment[available_width..];
+                let indent = " ".repeat(comment_prefix.len());
+
+                for chunk in remaining
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(width.saturating_sub(indent.len()))
+                {
+                    let chunk_str: String = chunk.iter().collect();
+                    if !chunk_str.trim().is_empty() {
+                        println!("{}{}", indent, chunk_str);
+                    }
+                }
+            }
+
+            println!(); // Empty line between commits
         }
 
+        // Footer
         println!("↑/↓: navigate, Space: toggle, Enter: chuck 'em back, q: quit");
     }
 }
@@ -148,40 +223,6 @@ fn read_chuck_config() -> Result<ChuckConfig> {
     Ok(config)
 }
 
-fn setup_template_remote(template_url: &str) -> Result<()> {
-    let repo = Repository::open(".")?;
-
-    // Check if template remote already exists
-    if let Ok(_) = repo.find_remote("template") {
-        println!("🧔 Template remote already exists, fetching latest...");
-
-        // Fetch from existing remote
-        let mut remote = repo.find_remote("template")?;
-        remote.fetch(&[] as &[&str], None, None)?;
-        return Ok(());
-    }
-
-    println!("🧔 Setting up template remote: {}", template_url);
-
-    // Add template remote
-    repo.remote("template", template_url)?;
-
-    // Fetch from template remote
-    let mut remote = repo.find_remote("template")?;
-    remote.fetch(&[] as &[&str], None, None)?;
-
-    println!("🧔 Template remote added and fetched successfully!");
-    Ok(())
-}
-
-fn template_remote_exists() -> bool {
-    if let Ok(repo) = Repository::open(".") {
-        repo.find_remote("template").is_ok()
-    } else {
-        false
-    }
-}
-
 fn extract_repo_name_from_url(url: &str) -> Result<String> {
     // Extract owner/repo from various URL formats
     // git@github.com:owner/repo.git -> owner/repo
@@ -206,88 +247,150 @@ fn extract_repo_name_from_url(url: &str) -> Result<String> {
 }
 
 fn find_template_repo() -> Result<String> {
-    // 1. Try fork detection first (current behavior)
-    if let Ok(parent_repo) = try_fork_detection() {
-        return Ok(parent_repo);
-    }
-
-    // 2. Try reading .chuckrc file
+    // Only try reading .chuckrc file (templates only)
     if let Ok(config) = read_chuck_config() {
-        setup_template_remote(&config.template.url)?;
+        println!("🧔 Found template in .chuckrc: {}", config.template.url);
         return extract_repo_name_from_url(&config.template.url);
     }
 
-    // 3. Try existing template remote
-    if template_remote_exists() {
-        // Get the URL of the existing template remote
-        let repo = Repository::open(".")?;
-        let remote = repo.find_remote("template")?;
-        if let Some(url) = remote.url() {
-            return extract_repo_name_from_url(url);
-        }
-    }
-
     Err(anyhow!(
-        "No template found. Chuck needs either:\n  \
-        • A GitHub fork (automatic detection)\n  \
-        • A .chuckrc file with template URL\n  \
-        • An existing 'template' remote"
+        "No template found. Chuck needs a .chuckrc file with template URL.\n  \
+        Add this to your template repository:\n  \
+        [template]\n  \
+        url = \"git@github.com:your-org/your-template.git\""
     ))
 }
 
-fn try_fork_detection() -> Result<String> {
-    // Use GitHub CLI to get repository info
+fn get_current_repo() -> Result<String> {
+    // Get current repository name using GitHub CLI
     let output = Command::new("gh")
-        .args(&["repo", "view", "--json", "parent"])
+        .args(&["repo", "view", "--json", "owner,name"])
         .output()
         .map_err(|_| anyhow!("GitHub CLI not found. Install with: brew install gh"))?;
 
     if !output.status.success() {
-        return Err(anyhow!("Failed to get repo info. Make sure you're in a GitHub repository and authenticated with 'gh auth login'"));
+        return Err(anyhow!("Failed to get current repo info. Make sure you're in a GitHub repository and authenticated with 'gh auth login'"));
     }
 
     let json: Value = serde_json::from_slice(&output.stdout)?;
 
-    if let Some(parent) = json.get("parent") {
-        if let Some(full_name) = parent.get("name") {
-            return Ok(full_name.as_str().unwrap().to_string());
-        }
-    }
+    let owner = json
+        .get("owner")
+        .and_then(|o| o.get("login"))
+        .and_then(|l| l.as_str())
+        .ok_or_else(|| anyhow!("Could not get repository owner"))?;
 
-    Err(anyhow!("This repository is not a fork"))
+    let name = json
+        .get("name")
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| anyhow!("Could not get repository name"))?;
+
+    Ok(format!("{}/{}", owner, name))
 }
 
-fn get_commits_since_fork(parent_repo: &str) -> Result<Vec<Commit>> {
-    // Use GitHub CLI to compare commits
+fn get_template_latest_commit_date(template_repo: &str) -> Result<String> {
+    // Get template's latest commit date
     let output = Command::new("gh")
-        .args(&["api", &format!("repos/{}/compare/main...HEAD", parent_repo)])
+        .args(&[
+            "api",
+            &format!("repos/{}/commits/main", template_repo),
+            "--jq",
+            ".commit.author.date",
+        ])
         .output()
-        .map_err(|_| anyhow!("Failed to compare with parent repository"))?;
+        .map_err(|_| anyhow!("Failed to get template commit info"))?;
 
     if !output.status.success() {
-        return Err(anyhow!("Failed to get commit comparison from GitHub API"));
+        return Err(anyhow!("Failed to get template's latest commit date"));
+    }
+
+    let date = String::from_utf8(output.stdout)?
+        .trim()
+        .trim_matches('"')
+        .to_string();
+
+    Ok(date)
+}
+
+fn get_template_base_commit(template_repo: &str) -> Result<String> {
+    // Get template's main branch HEAD commit SHA
+    let output = Command::new("gh")
+        .args(&[
+            "api",
+            &format!("repos/{}/commits/main", template_repo),
+            "--jq",
+            ".sha",
+        ])
+        .output()
+        .map_err(|_| anyhow!("Failed to get template base commit"))?;
+
+    if !output.status.success() {
+        return Err(anyhow!("Failed to get template's base commit SHA"));
+    }
+
+    let sha = String::from_utf8(output.stdout)?
+        .trim()
+        .trim_matches('"')
+        .to_string();
+
+    Ok(sha)
+}
+
+fn get_commits_since_template(current_repo: &str, template_repo: &str) -> Result<Vec<Commit>> {
+    println!(
+        "🧔 Comparing {} with template {}...",
+        current_repo, template_repo
+    );
+
+    // Get template's latest commit date
+    let template_date = get_template_latest_commit_date(template_repo)?;
+    println!("🧔 Template last updated: {}", template_date);
+
+    // Get current repo's commits
+    let output = Command::new("gh")
+        .args(&["api", &format!("repos/{}/commits", current_repo)])
+        .output()
+        .map_err(|_| anyhow!("Failed to get current repository commits"))?;
+
+    if !output.status.success() {
+        return Err(anyhow!("Failed to get commits from current repository"));
     }
 
     let json: Value = serde_json::from_slice(&output.stdout)?;
     let mut commits = Vec::new();
 
-    if let Some(commit_array) = json.get("commits").and_then(|c| c.as_array()) {
+    if let Some(commit_array) = json.as_array() {
+        // Parse template date for comparison
+        let template_timestamp = chrono::DateTime::parse_from_rfc3339(&template_date)?;
+
         for commit_data in commit_array {
             if let (Some(sha), Some(commit_info)) = (
                 commit_data.get("sha").and_then(|s| s.as_str()),
                 commit_data.get("commit"),
             ) {
                 if let Some(message) = commit_info.get("message").and_then(|m| m.as_str()) {
-                    let short_hash = &sha[..7];
-                    let files = get_commit_files(sha)?;
+                    if let Some(date_str) = commit_info
+                        .get("author")
+                        .and_then(|a| a.get("date"))
+                        .and_then(|d| d.as_str())
+                    {
+                        // Only include commits newer than template
+                        if let Ok(commit_timestamp) = chrono::DateTime::parse_from_rfc3339(date_str)
+                        {
+                            if commit_timestamp > template_timestamp {
+                                let short_hash = &sha[..7];
+                                let files = get_commit_files(sha)?;
 
-                    commits.push(Commit {
-                        hash: sha.to_string(),
-                        short_hash: short_hash.to_string(),
-                        message: message.lines().next().unwrap_or(message).to_string(),
-                        files,
-                        selected: false,
-                    });
+                                commits.push(Commit {
+                                    hash: sha.to_string(),
+                                    short_hash: short_hash.to_string(),
+                                    message: message.lines().next().unwrap_or(message).to_string(),
+                                    files,
+                                    selected: false,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -297,63 +400,202 @@ fn get_commits_since_fork(parent_repo: &str) -> Result<Vec<Commit>> {
 }
 
 fn get_commit_files(sha: &str) -> Result<Vec<String>> {
-    let repo = Repository::open(".")?;
-    let oid = Oid::from_str(sha)?;
-    let commit = repo.find_commit(oid)?;
+    // Use git CLI instead of git2
+    let output = Command::new("git")
+        .args(&["show", "--name-only", "--format=", sha])
+        .output()
+        .map_err(|_| anyhow!("Failed to execute git show"))?;
 
-    let mut files = Vec::new();
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Failed to get commit files: {}", error));
+    }
 
-    if let Ok(tree) = commit.tree() {
-        if commit.parent_count() > 0 {
-            if let Ok(parent) = commit.parent(0) {
-                if let Ok(parent_tree) = parent.tree() {
-                    let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)?;
+    let files: Vec<String> = String::from_utf8(output.stdout)?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .collect();
 
-                    diff.foreach(
-                        &mut |delta, _progress| {
-                            if let Some(path) = delta.new_file().path() {
-                                if let Some(path_str) = path.to_str() {
-                                    files.push(path_str.to_string());
-                                }
-                            }
-                            true
-                        },
-                        None,
-                        None,
-                        None,
-                    )?;
+    Ok(files)
+}
+
+fn create_branch_with_commits(
+    commits: &[&Commit],
+    verbose: bool,
+    template_repo: &str,
+) -> Result<String> {
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let branch_name = format!("chuck/{}", timestamp);
+
+    println!(
+        "🧔 Creating branch with {} selected commits...",
+        commits.len()
+    );
+
+    if verbose {
+        println!("🧔 VERBOSE: About to create branch {}", branch_name);
+    }
+
+    // Get the template's latest commit SHA to use as base
+    let template_base_sha = get_template_base_commit(template_repo)?;
+
+    if verbose {
+        println!(
+            "🧔 VERBOSE: Using template base commit: {}",
+            template_base_sha
+        );
+    }
+
+    // Add template as remote and fetch it
+    let config = read_chuck_config()?;
+    let template_remote_name = "chuck-template";
+
+    if verbose {
+        println!("🧔 VERBOSE: Adding template remote and fetching...");
+    }
+
+    // Add template remote (ignore error if it already exists)
+    let _ = Command::new("git")
+        .args(&["remote", "add", template_remote_name, &config.template.url])
+        .output();
+
+    // Fetch the template remote
+    let fetch_output = Command::new("git")
+        .args(&["fetch", template_remote_name])
+        .output()
+        .map_err(|_| anyhow!("Failed to fetch template remote"))?;
+
+    if !fetch_output.status.success() {
+        let error = String::from_utf8_lossy(&fetch_output.stderr);
+        return Err(anyhow!("Failed to fetch template: {}", error));
+    }
+
+    if verbose {
+        println!("🧔 VERBOSE: Template fetched successfully");
+    }
+
+    // Create branch from template base commit
+    let output = Command::new("git")
+        .args(&["checkout", "-b", &branch_name, &template_base_sha])
+        .output()
+        .map_err(|_| anyhow!("Failed to execute git checkout"))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "Failed to create branch from template base: {}",
+            error
+        ));
+    }
+
+    if verbose {
+        println!("🧔 VERBOSE: Branch created successfully from template base");
+    }
+
+    // Cherry-pick each selected commit
+    for commit in commits {
+        println!(
+            "🧔 Cherry-picking: {} - {}",
+            commit.short_hash, commit.message
+        );
+        if verbose {
+            println!("🧔 VERBOSE: About to cherry-pick commit {}", commit.hash);
+        }
+
+        match cherry_pick_commit(&commit.hash, verbose) {
+            Ok(()) => {
+                if verbose {
+                    println!(
+                        "🧔 VERBOSE: Cherry-pick completed for {}",
+                        commit.short_hash
+                    );
+                }
+            }
+            Err(e) => {
+                if e.to_string().contains("empty") {
+                    println!(
+                        "🧔 Skipping empty commit: {} - {}",
+                        commit.short_hash, commit.message
+                    );
+                    // Skip empty commits
+                    let skip_output = Command::new("git")
+                        .args(&["cherry-pick", "--skip"])
+                        .output()
+                        .map_err(|_| anyhow!("Failed to skip cherry-pick"))?;
+
+                    if !skip_output.status.success() {
+                        return Err(anyhow!("Failed to skip empty cherry-pick"));
+                    }
+                } else {
+                    return Err(e);
                 }
             }
         }
     }
 
-    Ok(files)
-}
-
-fn create_branch_with_commits(commits: &[&Commit]) -> Result<String> {
-    let repo = Repository::open(".")?;
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let branch_name = format!("chuck/{}", timestamp);
-
-    // Get current HEAD
-    let head = repo.head()?;
-    let head_commit = head.peel_to_commit()?;
-
-    // Find the merge base with the parent
-    // For now, we'll create the branch from current HEAD and cherry-pick
-    let _branch = repo.branch(&branch_name, &head_commit, false)?;
-
-    // Switch to the new branch
-    repo.set_head(&format!("refs/heads/{}", branch_name))?;
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))?;
-
-    // Reset to the fork point (we'll implement this properly later)
-    // For now, just create the branch with selected commits
-
     println!("🧔 Created branch: {}", branch_name);
-    println!("🧔 Selected {} commits", commits.len());
+    println!("🧔 Successfully processed {} commits", commits.len());
 
     Ok(branch_name)
+}
+
+fn cherry_pick_commit(commit_sha: &str, verbose: bool) -> Result<()> {
+    // Use git command for cherry-pick
+    let output = Command::new("git")
+        .args(&["cherry-pick", commit_sha])
+        .output()
+        .map_err(|_| anyhow!("Failed to execute git cherry-pick"))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        if verbose {
+            println!("🧔 VERBOSE: Cherry-pick error: {}", error);
+        }
+        return Err(anyhow!("Cherry-pick failed: {}", error));
+    }
+
+    Ok(())
+}
+
+fn push_to_template_and_create_pr(
+    branch_name: &str,
+    template_url: &str,
+    current_repo: &str,
+) -> Result<()> {
+    println!("🧔 Pushing branch to template repository...");
+
+    // Extract template repo name from URL
+    let template_repo = extract_repo_name_from_url(template_url)?;
+
+    // Push branch to template repository
+    let remote_branch_name = format!("chuck-from-{}", current_repo.replace("/", "-"));
+    let output = Command::new("git")
+        .args(&[
+            "push",
+            template_url,
+            &format!("{}:{}", branch_name, remote_branch_name),
+        ])
+        .output()
+        .map_err(|_| anyhow!("Failed to push to template repository"))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Failed to push branch: {}", error));
+    }
+
+    println!("🧔 Branch pushed successfully!");
+
+    // Generate PR URL
+    let pr_url = format!(
+        "https://github.com/{}/pull/new/{}",
+        template_repo, remote_branch_name
+    );
+
+    println!("🧔 Create pull request at: {}", pr_url);
+    println!("🧔 \"Now go make that pull request, kiddo\"");
+
+    Ok(())
 }
 
 fn run_interactive_selection(commits: Vec<Commit>) -> Result<Vec<Commit>> {
@@ -404,7 +646,7 @@ fn run_interactive_selection(commits: Vec<Commit>) -> Result<Vec<Commit>> {
 }
 
 fn main() -> Result<()> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
 
     println!("🧔 Chuck: Let's see what you've been working on...\n");
 
@@ -412,15 +654,38 @@ fn main() -> Result<()> {
     let template_repo =
         find_template_repo().map_err(|e| anyhow!("🧔 \"Hmm, having trouble here\": {}", e))?;
 
+    if cli.verbose {
+        println!("🧔 VERBOSE: Template repository: {}", template_repo);
+    }
     println!("🧔 Found template: {}", template_repo);
 
+    // Get current repository
+    let current_repo =
+        get_current_repo().map_err(|e| anyhow!("🧔 \"Can't figure out current repo\": {}", e))?;
+
+    if cli.verbose {
+        println!("🧔 VERBOSE: Current repository: {}", current_repo);
+    }
+
     // Get commits since template
-    let commits = get_commits_since_fork(&template_repo)
+    let commits = get_commits_since_template(&current_repo, &template_repo)
         .map_err(|e| anyhow!("🧔 \"Can't seem to get those commits\": {}", e))?;
 
     if commits.is_empty() {
         println!("🧔 \"Looks like you haven't made any commits since the template. Get to work!\"");
         return Ok(());
+    }
+
+    if cli.verbose {
+        println!("🧔 VERBOSE: Found {} commits to review", commits.len());
+        for commit in &commits {
+            println!(
+                "🧔 VERBOSE: {} - {} (files: {})",
+                commit.short_hash,
+                commit.message,
+                commit.files.len()
+            );
+        }
     }
 
     // Run interactive selection
@@ -431,16 +696,38 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Create branch with selected commits
-    let branch_name = create_branch_with_commits(&selected_commits.iter().collect::<Vec<_>>())?;
+    if cli.verbose {
+        println!(
+            "🧔 VERBOSE: Selected {} commits for cherry-picking",
+            selected_commits.len()
+        );
+    }
 
-    println!(
-        "🧔 Chucked {} commits to branch: {}",
-        selected_commits.len(),
-        branch_name
-    );
-    println!("🧔 Push with: git push origin {}", branch_name);
-    println!("🧔 \"Now go make that pull request, kiddo\"");
+    // Create branch with selected commits
+    let branch_name = create_branch_with_commits(
+        &selected_commits.iter().collect::<Vec<_>>(),
+        cli.verbose,
+        &template_repo,
+    )?;
+
+    // Get template URL for pushing
+    let config = read_chuck_config()?;
+
+    // Push to template and create PR
+    match push_to_template_and_create_pr(&branch_name, &config.template.url, &current_repo) {
+        Ok(()) => {
+            println!("🧔 All done! Check the URL above to create your pull request.");
+        }
+        Err(e) => {
+            println!("🧔 Branch created but couldn't auto-push: {}", e);
+            println!(
+                "🧔 Manual push: git push {} {}:chuck-from-{}",
+                config.template.url,
+                branch_name,
+                current_repo.replace("/", "-")
+            );
+        }
+    }
 
     Ok(())
 }
