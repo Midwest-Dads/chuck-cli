@@ -1,0 +1,9 @@
+# Example .chuckrc file
+# Add this to your template repository so Chuck can automatically
+# set up the template remote when someone creates from your template
+
+[template]
+url = "git@github.com:your-org/your-template.git"
+
+# Alternative HTTPS format:
+# url = "https://github.com/your-org/your-template.git"
