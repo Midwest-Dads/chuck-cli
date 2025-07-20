@@ -12,6 +12,8 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::process::Command;
+use textwrap::{wrap, Options};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser)]
 #[command(name = "chuck")]
@@ -78,8 +80,8 @@ impl CommitSelector {
     }
 
     fn display(&self) {
-        // Clear screen and move cursor to top-left
-        print!("\x1B[2J\x1B[H");
+        // Move cursor to top and clear to end of screen (reduces flicker)
+        print!("\x1B[H\x1B[J");
         io::stdout().flush().unwrap();
 
         let (terminal_width, _) = size().unwrap_or((80, 24));
@@ -96,28 +98,29 @@ impl CommitSelector {
             let cursor = if i == self.current_index { ">" } else { " " };
             let checkbox = if commit.selected { "[✓]" } else { "[ ]" };
 
-            // Main commit line with proper wrapping
+            // Main commit line with proper wrapping using textwrap
             let prefix = format!("{} {} {} - ", cursor, checkbox, commit.short_hash);
-            let available_width = width.saturating_sub(prefix.len());
+            let prefix_width = UnicodeWidthStr::width(prefix.as_str());
+            let available_width = width.saturating_sub(prefix_width);
 
-            if commit.message.len() <= available_width {
-                println!("{}{}", prefix, commit.message);
-            } else {
-                // Wrap the commit message
-                println!("{}{}", prefix, &commit.message[..available_width]);
-                let remaining = &commit.message[available_width..];
-                let indent = " ".repeat(prefix.len());
+            if available_width > 0 {
+                let indent_string = " ".repeat(prefix_width);
+                let options = Options::new(available_width)
+                    .initial_indent("")
+                    .subsequent_indent(&indent_string);
 
-                for chunk in remaining
-                    .chars()
-                    .collect::<Vec<_>>()
-                    .chunks(width.saturating_sub(indent.len()))
-                {
-                    let chunk_str: String = chunk.iter().collect();
-                    if !chunk_str.trim().is_empty() {
-                        println!("{}{}", indent, chunk_str);
+                let wrapped_lines = wrap(&commit.message, &options);
+
+                for (line_idx, line) in wrapped_lines.iter().enumerate() {
+                    if line_idx == 0 {
+                        println!("{}{}", prefix, line);
+                    } else {
+                        println!("{}", line);
                     }
                 }
+            } else {
+                // Terminal too narrow, just print what we can
+                println!("{}", prefix);
             }
 
             // Files line with wrapping
@@ -133,49 +136,27 @@ impl CommitSelector {
                 };
 
                 let files_prefix = "    Files: ";
-                let available_width = width.saturating_sub(files_prefix.len());
+                let files_prefix_width = UnicodeWidthStr::width(files_prefix);
+                let available_width = width.saturating_sub(files_prefix_width);
 
-                if file_list.len() <= available_width {
-                    println!("{}{}", files_prefix, file_list);
-                } else {
-                    println!("{}{}", files_prefix, &file_list[..available_width]);
-                    let remaining = &file_list[available_width..];
-                    let indent = " ".repeat(files_prefix.len());
+                if available_width > 0 {
+                    let files_indent_string = " ".repeat(files_prefix_width);
+                    let options = Options::new(available_width)
+                        .initial_indent("")
+                        .subsequent_indent(&files_indent_string);
 
-                    for chunk in remaining
-                        .chars()
-                        .collect::<Vec<_>>()
-                        .chunks(width.saturating_sub(indent.len()))
-                    {
-                        let chunk_str: String = chunk.iter().collect();
-                        if !chunk_str.trim().is_empty() {
-                            println!("{}{}", indent, chunk_str);
+                    let wrapped_lines = wrap(&file_list, &options);
+
+                    for (line_idx, line) in wrapped_lines.iter().enumerate() {
+                        if line_idx == 0 {
+                            println!("{}{}", files_prefix, line);
+                        } else {
+                            println!("{}", line);
                         }
                     }
-                }
-            }
-
-            // Dad comment with wrapping
-            let dad_comment = get_dad_comment(&commit.message, commit.selected);
-            let comment_prefix = "    ";
-            let available_width = width.saturating_sub(comment_prefix.len());
-
-            if dad_comment.len() <= available_width {
-                println!("{}{}", comment_prefix, dad_comment);
-            } else {
-                println!("{}{}", comment_prefix, &dad_comment[..available_width]);
-                let remaining = &dad_comment[available_width..];
-                let indent = " ".repeat(comment_prefix.len());
-
-                for chunk in remaining
-                    .chars()
-                    .collect::<Vec<_>>()
-                    .chunks(width.saturating_sub(indent.len()))
-                {
-                    let chunk_str: String = chunk.iter().collect();
-                    if !chunk_str.trim().is_empty() {
-                        println!("{}{}", indent, chunk_str);
-                    }
+                } else {
+                    // Terminal too narrow
+                    println!("{}", files_prefix);
                 }
             }
 
@@ -184,32 +165,6 @@ impl CommitSelector {
 
         // Footer
         println!("↑/↓: navigate, Space: toggle, Enter: chuck 'em back, q: quit");
-    }
-}
-
-fn get_dad_comment(message: &str, selected: bool) -> &'static str {
-    let message_lower = message.to_lowercase();
-
-    if selected {
-        if message_lower.contains("fix") || message_lower.contains("bug") {
-            "\"That's a keeper - everyone needs that fix\""
-        } else if message_lower.contains("add")
-            && (message_lower.contains("util") || message_lower.contains("helper"))
-        {
-            "\"Yep, chuck that back to template\""
-        } else if message_lower.contains("improve") || message_lower.contains("optimize") {
-            "\"That's good stuff right there\""
-        } else {
-            "\"That's a keeper right there\""
-        }
-    } else {
-        if message_lower.contains("config") || message_lower.contains("deploy") {
-            "\"Nah, that stays with your app\""
-        } else if message_lower.contains("app") || message_lower.contains("business") {
-            "\"That's your problem, not theirs\""
-        } else {
-            "\"Keep that one to yourself, kiddo\""
-        }
     }
 }
 
@@ -612,11 +567,10 @@ fn run_interactive_selection(commits: Vec<Commit>) -> Result<Vec<Commit>> {
     loop {
         selector.display();
 
-        if let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read()?
-        {
-            match code {
+        match event::read()? {
+            Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) => match code {
                 KeyCode::Up => selector.move_up(),
                 KeyCode::Down => selector.move_down(),
                 KeyCode::Char(' ') => selector.toggle_current(),
@@ -634,7 +588,12 @@ fn run_interactive_selection(commits: Vec<Commit>) -> Result<Vec<Commit>> {
                     std::process::exit(0);
                 }
                 _ => {}
+            },
+            Event::Resize(_, _) => {
+                // Terminal was resized, re-render the display
+                // The display() method will automatically get the new terminal size
             }
+            _ => {}
         }
     }
 
