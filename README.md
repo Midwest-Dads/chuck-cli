@@ -2,18 +2,18 @@
 
 **Interactive commit selection for upstream contributions**
 
-Chuck helps you easily select which commits from your forked app should go back to the upstream template. No more manually figuring out what's template-worthy vs app-specific!
+Chuck helps you easily select which commits from your template-based project should go back to the upstream template. No more manually figuring out what's template-worthy vs app-specific!
 
 ## The Problem Chuck Solves
 
-When you create an app from a template and build your app, you make commits that are:
+When you create an app from a GitHub template and build your app, you make commits that are:
 
 - ✅ **Template-worthy**: Shared utilities, bug fixes, improvements everyone could use
 - ❌ **App-specific**: Your business logic, config, deployment scripts
 
 Chuck makes it trivial to interactively select the good stuff and create a clean branch ready for upstream contribution.
 
-**Works with both GitHub forks AND templates!**
+**Works with GitHub templates via .chuckrc configuration!**
 
 ## Installation
 
@@ -26,28 +26,20 @@ Chuck makes it trivial to interactively select the good stuff and create a clean
 
 ```bash
 git clone <this-repo>
-cd chuck
+cd chuck-cli
 cargo build --release
 cp target/release/chuck /usr/local/bin/  # or add to PATH
 ```
 
-## Usage
-
-Chuck works with both **GitHub forks** and **GitHub templates**:
-
-### Option A: GitHub Forks (Automatic)
+### Using the Install Script
 
 ```bash
-# 1. Fork template on GitHub (web UI)
-# 2. Clone your fork
-git clone git@github.com:yourusername/your-app.git
-cd your-app
-
-# 3. Chuck works automatically
-chuck  # Auto-detects fork relationship
+./install.sh
 ```
 
-### Option B: GitHub Templates (with .chuckrc)
+## Usage
+
+Chuck works with **GitHub templates** using `.chuckrc` configuration:
 
 ```bash
 # 1. Create from template on GitHub (web UI)
@@ -61,7 +53,7 @@ chuck  # Reads .chuckrc, adds remote, works!
 
 ## .chuckrc Configuration
 
-For GitHub templates (or manual setup), add a `.chuckrc` file to your **template repository**:
+Add a `.chuckrc` file to your **template repository**:
 
 ```toml
 [template]
@@ -71,7 +63,7 @@ url = "git@github.com:company/web-template.git"
 When someone creates a project from your template, this file comes with it and Chuck automatically:
 
 1. Reads the template URL from `.chuckrc`
-2. Adds it as a remote named "template"
+2. Adds it as a remote named "chuck-template"
 3. Fetches the latest changes
 4. Compares commits and shows the interactive selection
 
@@ -85,95 +77,84 @@ When someone creates a project from your template, this file comes with it and C
 
 Chuck will:
 
-1. **Try fork detection first** (works automatically with GitHub forks)
-2. **Try reading .chuckrc** (works with GitHub templates)
-3. **Try existing template remote** (works if you manually added one)
-4. Show you all commits since template/fork
-5. Let you interactively select which ones to contribute back
-6. Create a clean branch with just those commits
-
-## Push and Create PR
-
-```bash
-git push origin chuck/20250120-143022
-# Then create PR on GitHub web interface
-```
+1. **Read .chuckrc** to find the template repository URL
+2. Add the template as a remote and fetch latest changes
+3. Show you all commits since the template's latest commit
+4. Let you interactively select which ones to contribute back
+5. Create a clean branch with just those commits
+6. Push the branch to the template repository
 
 ## Interactive Selection
 
-Chuck shows you a list like this:
+Chuck shows you a terminal UI like this:
 
 ```
-🧔 Chuck: Sorting commits like a pro
+🧔 Chuck: 3 of 4 commits selected
 
-Found 4 commits since you forked:
-
-  [✓] abc1234 - Fix bug in auth middleware
-      Files: lib/auth.rs, lib/middleware.rs
-      "That's a keeper - everyone needs that fix"
-
-> [ ] def5678 - Add my company's payment logic
-      Files: src/payment.rs, src/config.rs
-      "Nah, that stays with your app"
-
-  [✓] ghi9012 - Improve database connection pool
-      Files: lib/db.rs
-      "That's good stuff right there"
-
-  [ ] jkl3456 - Add app-specific deployment config
-      Files: deploy.sh, k8s/
-      "That's your problem, not theirs"
-
-↑/↓: navigate, Space: toggle, Enter: chuck 'em back, q: quit
+┌─ Commits ─────────────────────────────────────┐┌─ Details ──────────────────────┐
+│► [✓] abc1234 - Fix bug in auth middleware     ││Hash: abc1234567890abcdef...    │
+│  [ ] def5678 - Add my company's payment logic ││Author: John Doe                │
+│  [✓] ghi9012 - Improve database connection    ││Date: 2025-01-20 14:30         │
+│  [ ] jkl3456 - Add deployment config          ││                                │
+└───────────────────────────────────────────────┘│Message:                        │
+                                                  │Fix bug in auth middleware      │
+↑/↓/j/k: navigate │ Space: toggle │ a: all │     │                                │
+n: none │ i: invert │ h/?: help │ Enter: proceed │Files:                          │
+q: quit                                           │  • lib/auth.rs                 │
+                                                  │  • lib/middleware.rs           │
+                                                  └────────────────────────────────┘
 ```
 
 **Controls:**
 
-- `↑/↓` - Navigate between commits
+- `↑/↓` or `j/k` - Navigate between commits
 - `Space` - Toggle selection
+- `a` - Select all commits
+- `n` - Select none (clear all)
+- `i` - Invert selection
+- `h` or `?` - Show help
 - `Enter` - Create branch with selected commits
-- `q` - Quit without doing anything
+- `q` or `Esc` - Quit without doing anything
+
+## Push and Create PR
+
+After selecting commits, Chuck will:
+
+1. Create a timestamped branch (e.g., `chuck/20250120-143022`)
+2. Cherry-pick your selected commits onto the template's base
+3. Attempt to push the branch to the template repository
+4. Provide you with a URL to create the pull request
+
+```bash
+🧔 ✅ SUCCESS! All operations completed successfully.
+🧔 Check the URL above to create your pull request.
+```
 
 ## Requirements
 
-- Must be run in a GitHub repository (fork, template, or with manual remote setup)
+- Must be run in a GitHub repository created from a template
 - GitHub CLI must be installed and authenticated (`gh auth login`)
-- Repository must have commits since the template/fork point
-- For templates: `.chuckrc` file with template URL (or manual `template` remote)
-
-## Dad Wisdom
-
-Chuck provides helpful commentary on your commits:
-
-**For template-worthy commits:**
-
-- "That's a keeper - everyone needs that fix"
-- "Yep, chuck that back to template"
-- "That's good stuff right there"
-
-**For app-specific commits:**
-
-- "Nah, that stays with your app"
-- "That's your problem, not theirs"
-- "Keep that one to yourself, kiddo"
+- Repository must have a `.chuckrc` file with template URL
+- Repository must have commits since the template's latest commit
 
 ## Error Messages
 
-Chuck gives friendly error messages:
+Chuck gives helpful error messages:
 
-- **Not a fork**: "This repository is not a fork. Chuck only works with forked repositories."
+- **No .chuckrc**: "No template found. Chuck needs a .chuckrc file with template URL."
 - **No GitHub CLI**: "GitHub CLI not found. Install with: brew install gh"
 - **Not authenticated**: "Make sure you're in a GitHub repository and authenticated with 'gh auth login'"
+- **No commits**: "Looks like you haven't made any commits since the template. Get to work!"
 
 ## Example Workflow
 
 ```bash
-# 1. Fork template on GitHub (web UI)
-# 2. Clone your fork
+# 1. Create from template on GitHub (web UI)
+# 2. Clone your new repo
 git clone git@github.com:myuser/my-awesome-app.git
 cd my-awesome-app
 
-# 3. Build your app
+# 3. Build your app (template already has .chuckrc)
 git commit -m "Add user authentication"      # ← Template-worthy
 git commit -m "Add company branding"         # ← App-specific
 git commit -m "Fix database connection bug"  # ← Template-worthy
@@ -181,13 +162,20 @@ git commit -m "Deploy to our servers"       # ← App-specific
 
 # 4. Interactive selection
 chuck
-# Select commits 1 and 3
+# Select commits 1 and 3 using the TUI
 
-# 5. Push and create PR
-git push origin chuck/20250120-143022
-# Create PR on GitHub: my-awesome-app → template
+# 5. Chuck creates branch and pushes automatically
+# 6. Create PR using the provided GitHub URL
 ```
 
-## License
+## Command Line Options
 
-MIT
+```bash
+chuck --help     # Show help
+chuck --version  # Show version
+chuck --verbose  # Show detailed output during operation
+```
+
+## Version
+
+Current version: 0.2.3

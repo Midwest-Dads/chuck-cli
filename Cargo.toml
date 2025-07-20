@@ -3,7 +3,7 @@ name = "chuck"
 version = "0.2.3"
 edition = "2021"
 description = "Interactive commit selection for upstream contributions"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Chuck CLI Contributors"]
 license = "MIT"
 
 [dependencies]
